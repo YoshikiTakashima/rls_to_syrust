@@ -1,70 +1,145 @@
+mod string_utils;
+use string_utils::*;
+
 use rls_analysis::*;
 use std::path::Path;
-use std::string::String;
-use log::{info, trace, warn};
+use std::collections::HashMap;
 
-fn process_leaf(_host: &AnalysisHost, _def: &Def)  {
-    println!("name: {:?}, kind: {:?}, type: {:?}", _def.qualname,  _def.kind, _host.show_type(&_def.span));
-}
-
-fn process_children(_parent_id: Id, _def: &Def) -> Def {    
-    return _def.clone();
-}
-
-/*
-Recursive helper.
-*/
-fn recurse_crate_tree(host: &AnalysisHost, _id: &Id) {
-    if let Ok(current_def) = host.get_def(*_id) {
-	if current_def.qualname.contains("string") { //&& current_def.qualname.contains("string")
-	    println!("ID: {}", &_id);
-	    process_leaf(host, &current_def);
-	}
-    }
-    
-    
-    if let Ok(child_defns) =  host.for_each_child_def(*_id, process_children) {
-	for i in 0..child_defns.len() {
-	    if let Ok(child_id) = host.crate_local_id(&child_defns[i].span) {
-		recurse_crate_tree(host, &child_id);
-	    }
-	}
-    }
+fn print_kind(def: &Def) {
+    match def.kind {
+	DefKind::Enum => println!("Kind: Enum, Name: {:?}, {:?}", def.qualname, def.value),
+	DefKind::TupleVariant => println!("Kind: TupleVariant, Name: {:?}, {:?}", def.qualname, def.value),
+	DefKind::StructVariant => println!("Kind: StructVariant, Name: {:?}, {:?}", def.qualname, def.value),
+	DefKind::Tuple => println!("Kind: Tuple, Name: {:?}, {:?}", def.qualname, def.value),
+	DefKind::Struct => println!("Kind: Struct, Name: {:?}, {:?}", def.qualname, def.value),
+	DefKind::Union => println!("Kind: Union, Name: {:?}, {:?}", def.qualname, def.value),
+	DefKind::Trait => println!("Kind: Trait, Name: {:?}, {:?}", def.qualname, def.value),
+	DefKind::Function => println!("Kind: Function, Name: {:?}, {:?}", def.qualname, def.value),
+	DefKind::ForeignFunction => println!("Kind: ForeignFunction, Name: {:?}, {:?}", def.qualname, def.value),
+	DefKind::Method => println!("Kind: Method, Name: {:?}, {:?}", def.qualname, def.value),
+	DefKind::Macro => println!("Kind: Macro, Name: {:?}, {:?}", def.qualname, def.value),
+	DefKind::Mod => println!("Kind: Module, Name: {:?}, {:?}", def.qualname, def.value),
+	DefKind::Type => println!("Kind: Type, Name: {:?}, {:?}", def.qualname, def.value),
+	DefKind::Local => println!("Kind: Local, Name: {:?}, {:?}", def.qualname, def.value),
+	DefKind::Static => println!("Kind: Static, Name: {:?}, {:?}", def.qualname, def.value),
+	DefKind::ForeignStatic => println!("Kind: Foreignstatic, Name: {:?}, {:?}", def.qualname, def.value),
+	DefKind::Const => println!("Kind: Const, Name: {:?}, {:?}", def.qualname, def.value),
+	DefKind::Field => println!("Kind: Field, Name: {:?}, {:?}", def.qualname, def.value),
+	DefKind::ExternType => println!("Kind: Externtype, Name: {:?}, {:?}", def.qualname, def.value)
+    };
 }
 
 /*
-Caller for init. Helps with top level filtering.
+Return value (Objects (i.e. Enum and Struct), Functions defined)
 */
-fn parse_crate_tree(host: &AnalysisHost) {
-    if let Ok(vec) = host.def_roots() {
-	for i in 0..vec.len() {
-	    if true { // or some predicate of vec[i].1
-		recurse_crate_tree(host, &vec[i].0);
+fn decompose_defs<'a>(host: &AnalysisHost, defs : &'a Vec<(Id, Def)>) ->
+     (HashMap<String, &'a (Id, Def)>, HashMap<String, &'a Def>,
+      HashMap<Span, &'a (Id, Def)>) {
+	 let mut objects: HashMap<String, &(Id, Def)> = HashMap::new();
+	 let mut functions: HashMap<String, &Def> = HashMap::new();
+	 let mut rel_path_methods: HashMap<String, &Def> = HashMap::new();
+	 let mut trait_impls: HashMap<Span, &(Id, Def)> = HashMap::new();
+	 
+	 for def in defs.iter() {
+	     match def.1.kind {
+		 DefKind::Enum => {
+		     objects.insert(def.1.qualname.clone(), def); 
+		 },
+		 DefKind::Struct => {
+		     objects.insert(def.1.qualname.clone(), def);
+		 },
+		 DefKind::Function => {
+		     functions.insert(def.1.qualname.clone(), &def.1); 
+		 },
+		 DefKind::Method => {
+		     if is_rel_path(&def.1.qualname) {
+			 rel_path_methods.insert(def.1.qualname.clone(), &def.1);
+		     } else {
+			 functions.insert(def.1.qualname.clone(), &def.1);
+		     }
+		 },
+		 DefKind::Trait => {
+		     if let Ok(impls) = host.find_impls(def.0) {
+			 for span in impls.iter() {
+			     trait_impls.insert(span.clone(), def);
+			 }
+		     }
+		 },
+		 _ => {}
+	     }
+	 }
+
+	 for (pth, def) in rel_path_methods.iter() {
+	     if let Some(fixed) = fix_path(&objects, &pth, def) {
+		 functions.insert(fixed, def);
+	     }
+	 }
+	 
+	 return (objects, functions, trait_impls);
+     }
+
+fn fix_path(objects: & HashMap<String, &(Id, Def)>, path: &String, def: &Def) -> Option<String> {
+    if let Some(base) = get_base_name(path) { //first part
+	if let Some(mut term) = get_term_name(path) { //last part
+	    if let Some(i) = term.find('<') {
+		term = term[0..i].to_string();
+	    }
+	    for (name, _) in objects.iter() {
+		if match_base_term(&name, &base, &term) {
+		    return Some(format!("{}::{}", &name, &def.name));
+		}
 	    }
 	}
     }
+    return None;
 }
 
 fn main() {
     let host = AnalysisHost::new(Target::Debug);
     let p = Path::new("/home/ytakashima/Desktop/RustSynth/rls-analysis/test_data/rust-analysis");
-    if host.reload(p, Path::new("/home/ytakashima/Desktop/RustSynth/rls_to_syrust")).is_ok() {
-	println!("Roots: {:?}\n", host.def_roots());
-	//println!("Roots: {:?}\n", host.matching_defs("String::new"));
-	//println!("Roots: {:?}\n", host.get_def(Id::new(8589934592)));
-	//println!("Roots: {:?}\n", host.for_each_child_def(Id::new(21474836480), print_children));
-	//parse_crate_tree(&host);
-	//println!("{:?}\n", &host.def_parents(Id::new(21474841212))); 
-	if let Ok(parents) = host.def_parents(Id::new(21474841212)) {
-	    for j in 0..parents.len() {
-		//println!("Types of IMPL(21474841212): {:?}\n\n", host.find_all_refs(&parents[j], true, true)); 
+    if host.reload(p, Path::new("/home/ytakashima/Desktop/RustSynth/rls_to_syrust")).is_ok() {	
+	if let Ok(mut defs) =  host.dump_defs() {
+	    /*for def in defs.iter() {
+		print_kind(&def.1);
+	    }*/
+	    defs = defs.into_iter()
+		.filter(|d|   d.1.qualname.starts_with("alloc")
+			|| d.1.qualname.starts_with("std")
+			|| d.1.qualname.starts_with("core"))
+		.collect();
+	    let (obj, fun, traits) = decompose_defs(&host, &defs);
+	    
+	    for (name, def) in fun.iter() {
+		print_fn(&name, &def.value, Some(&-1));
 	    }
-	}
-	if let Ok(children2) = host.matching_defs("with_capacity") {
-	    for k in 0..children2.len() {
-		println!("with_capacity: {:?} {:?}", &children2[k], host.id(&children2[k].span));
+
+	    let mut ctrmap: HashMap<String, i32> = HashMap::new();
+	    for (name, id_def) in obj.iter() {
+		if let Ok(impl_spans) = host.find_impls(id_def.0) {
+		    for span in impl_spans.iter() {
+			if let Some(i_df) = traits.get(&span) {
+			    let ctr = &mut ctrmap;
+			    let _x = host.for_each_child_def(i_df.0, move |_, df| {
+				if df.kind == DefKind::Method || df.kind == DefKind::Function {
+				    print_fn(&format!("{}::{}", name, &df.name),
+					     &df.value, ctr.get(&df.name));
+				    match ctr.get(&df.name) {
+					Some(x) => {
+					    ctr.insert(df.name.clone(), x+1);
+					},
+					None => {
+					    ctr.insert(df.name.clone(), 1);   
+					}
+				    };
+				}
+			    });
+			}
+		    }
+		}
+		ctrmap.clear();
 	    }
-	    println!("Array Length: {:?}", children2.len());
 	}
     }
+    //"fn (n: u128, d: u128, rem: Option<&mut u128>) -> u128"
+    //"std<LazyKeyInner<T>>::take"
 }

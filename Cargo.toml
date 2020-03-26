@@ -7,5 +7,7 @@ edition = "2018"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-rls-analysis = "0.18.1"
+rls-analysis = { git = "https://github.com/YoshikiTakashima/rls-analysis.git", branch = "master"  }
+regex = "1"
 log = "0.4"
+lazy_static = "1.4.0"
