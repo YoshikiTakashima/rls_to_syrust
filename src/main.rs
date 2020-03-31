@@ -52,6 +52,13 @@ fn decompose_defs<'a>(host: &AnalysisHost, defs : &'a Vec<(Id, Def)>) ->
 		     functions.insert(def.1.qualname.clone(), &def.1); 
 		 },
 		 DefKind::Method => {
+		     if let Some(id) = def.1.parent {
+			 if let Ok(parent_def) = host.get_def(id) {
+			     if parent_def.kind == DefKind::Trait {
+				 continue; //if it's a trait, don't bother to include
+			     }
+			 }
+		     }
 		     if is_rel_path(&def.1.qualname) {
 			 rel_path_methods.insert(def.1.qualname.clone(), &def.1);
 		     } else {
@@ -140,6 +147,4 @@ fn main() {
 	    }
 	}
     }
-    //"fn (n: u128, d: u128, rem: Option<&mut u128>) -> u128"
-    //"std<LazyKeyInner<T>>::take"
 }
